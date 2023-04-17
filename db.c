@@ -162,39 +162,31 @@ int main(int argc, char *argv[])
         if (input_buffer->buffer[0] == '.')
         {
 
-            // TODO Done!
             switch (do_meta_command(input_buffer))
             {
 
-            // TODO Done!
             case (META_COMMAND_SUCCESS):
                 continue;
 
-            // TODO Done!
             case (META_COMMAND_UNRECOGNIZED_COMMAND):
                 printf("未定義的指令 '%s'\n", input_buffer->buffer);
                 continue;
             }
         }
 
-        // TODO Done!
         Statement statement;
 
-        // TODO Done!
         switch (prepare_statement(input_buffer, &statement))
         {
 
-        // TODO Done!
         case (PREPARE_SUCCESS):
             break;
 
-        // TODO Done!
         case (PREPARE_UNRECOGNIZED_STATEMENT):
             printf("未定義的指令 '%s'\n", input_buffer->buffer);
             continue;
         }
 
-        // TODO Done!
         execute_statement(&statement);
         printf("Executed.\n");
     }
