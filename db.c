@@ -3,6 +3,26 @@
 #include <stdbool.h>
 #include <string.h>
 
+typedef enum
+{
+
+    META_COMMAND_SUCCESS,
+    META_COMMAND_UNRECOGNIZED_COMMAND,
+} MetaCommandResult;
+
+typedef enum
+{
+
+    PREPARE_SUCCESS,
+    PREPARE_UNRECOGNIZED_STATEMENT,
+} PrepareResult;
+
+typedef enum
+{
+    STATEMENT_INSERT,
+    STATEMENT_SELECT,
+} StatementType;
+
 typedef struct
 {
 
@@ -10,6 +30,12 @@ typedef struct
     size_t buffer_length;
     ssize_t input_lenght;
 } InputBuffer;
+
+typedef struct
+{
+
+    StatementType type;
+} Statement;
 
 /**
  * \brief 初始化 InputBuffer 實例
@@ -67,6 +93,61 @@ void close_input_buffer(InputBuffer *input_buffer)
     free(input_buffer);
 }
 
+MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+{
+
+    if (strcmp(input_buffer->buffer, ".exit") == 0)
+    {
+
+        printf("Bye~\n");
+        exit(EXIT_SUCCESS);
+    }
+    else
+    {
+
+        return META_COMMAND_UNRECOGNIZED_COMMAND;
+    }
+}
+
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
+{
+
+    // 能夠支援 insert X X X 的語法
+    if (strncmp(input_buffer->buffer, "insert", 6) == 0)
+    {
+
+        statement->type = STATEMENT_INSERT;
+        return PREPARE_SUCCESS;
+    }
+
+    if (strcmp(input_buffer->buffer, "select") == 0)
+    {
+
+        statement->type = STATEMENT_SELECT;
+        return PREPARE_SUCCESS;
+    }
+
+    return PREPARE_UNRECOGNIZED_STATEMENT;
+}
+
+void execute_statement(Statement *statement)
+{
+
+    switch (statement->type)
+    {
+
+    case (STATEMENT_INSERT):
+
+        printf("insert data...\n");
+        break;
+
+    case (STATEMENT_SELECT):
+
+        printf("select data...\n");
+        break;
+    }
+}
+
 int main(int argc, char *argv[])
 {
     InputBuffer *input_buffer = new_input_buffer();
@@ -78,16 +159,43 @@ int main(int argc, char *argv[])
 
         read_input(input_buffer);
 
-        if (strcmp(input_buffer->buffer, ".exit") == 0)
+        if (input_buffer->buffer[0] == '.')
         {
 
-            close_input_buffer(input_buffer);
-            printf("Bye~\n");
-            exit(EXIT_SUCCESS);
+            // TODO Done!
+            switch (do_meta_command(input_buffer))
+            {
+
+            // TODO Done!
+            case (META_COMMAND_SUCCESS):
+                continue;
+
+            // TODO Done!
+            case (META_COMMAND_UNRECOGNIZED_COMMAND):
+                printf("未定義的指令 '%s'\n", input_buffer->buffer);
+                continue;
+            }
         }
-        else
+
+        // TODO Done!
+        Statement statement;
+
+        // TODO Done!
+        switch (prepare_statement(input_buffer, &statement))
         {
-            printf("未定義的指令\n");
+
+        // TODO Done!
+        case (PREPARE_SUCCESS):
+            break;
+
+        // TODO Done!
+        case (PREPARE_UNRECOGNIZED_STATEMENT):
+            printf("未定義的指令 '%s'\n", input_buffer->buffer);
+            continue;
         }
+
+        // TODO Done!
+        execute_statement(&statement);
+        printf("Executed.\n");
     }
 }
