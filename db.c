@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
 typedef enum
 {
@@ -84,8 +87,16 @@ const uint32_t TABLE_MAX_ROWS = ROWS_PRE_PAGE * TABLE_MAX_PAGE; // 一個 table 
 typedef struct
 {
 
-    uint32_t num_rows;
+    int file_descriptor;
+    uint32_t file_lenght;
     void *pages[TABLE_MAX_PAGE];
+} Pager;
+
+typedef struct
+{
+
+    uint32_t num_rows;
+    Pager *pager;
 } Table;
 
 /**
@@ -144,13 +155,16 @@ void close_input_buffer(InputBuffer *input_buffer)
     free(input_buffer);
 }
 
-MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+void db_close(Table *table);
+
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table)
 {
 
     if (strcmp(input_buffer->buffer, ".exit") == 0)
     {
 
         printf("Bye~\n");
+        db_close(table);
         exit(EXIT_SUCCESS);
     }
     else
@@ -225,19 +239,57 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
+void *get_page(Pager *pager, uint32_t page_num)
+{
+
+    // page number 超出 Table Max Page number
+    if (page_num > TABLE_MAX_PAGE)
+    {
+        printf("Tried to fetch page number out of bounds. %d > %d\n", page_num, TABLE_MAX_PAGE);
+        exit(EXIT_FAILURE);
+    }
+
+    // cache miss ， allocate memory 並且將 file load 進去
+    if (pager->pages[page_num] == NULL)
+    {
+
+        void *page = malloc(PAGE_SIZE);
+        uint32_t num_pages = pager->file_lenght / PAGE_SIZE;
+
+        // 如果最後一頁的資料沒有存滿，就將 num_pages + 1 ，因為上面在計算的時候會遺漏掉
+        // 例如 PAGE_SIZE = 1024， file_length = 4096，這樣代表 4 個頁面都存滿了資料
+        // 但如果 file_length = 5000，就代表 4 個頁面存滿了，但第五個頁面還沒存滿，這樣 num_pages = 4，會少一個頁面
+        if (pager->file_lenght % PAGE_SIZE)
+        {
+            num_pages += 1;
+        }
+
+        // if cache miss ，將 disk 中的資料 load 到 memory
+        if (page_num <= num_pages)
+        {
+
+            lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+            ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
+
+            if (bytes_read == -1)
+            {
+                printf("Error reading file: %d\n", errno);
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        pager->pages[page_num] = page;
+    }
+
+    return pager->pages[page_num];
+}
+
 void *row_slot(Table *table, uint32_t row_num)
 {
 
     uint32_t page_num = row_num / ROWS_PRE_PAGE; // 取得 row 是在哪個 page 中
 
-    void *page = table->pages[page_num]; // 取得指向該 page 的 pointer
-
-    // allocate 新的 page 空間，如果 page 還沒被 allocate
-    if (page == NULL)
-    {
-
-        page = table->pages[page_num] = malloc(PAGE_SIZE);
-    }
+    void *page = get_page(table->pager, page_num);
 
     uint32_t row_offset = row_num % ROWS_PRE_PAGE; // 取得在 page 中該 row 的 offset
     uint32_t byte_offset = row_offset * ROW_SIZE;  // 計算 row offset 需要偏移多少 bytes
@@ -264,8 +316,8 @@ void serialize_row(Row *source, void *destination)
     // 將 soruce 的資料複製到 destination 中
     // 是以連續緊湊的方式
     memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
-    memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+    strncpy(destination + USERNAME_OFFSET, source->username, USERNAME_SIZE);
+    strncpy(destination + EMAIL_OFFSET, source->email, EMAIL_SIZE);
 }
 
 /**
@@ -329,39 +381,153 @@ ExecuteResult execute_statement(Statement *statement, Table *table)
     }
 }
 
-Table *new_table()
+Pager *pager_open(const char *filename)
 {
 
-    Table *table = (Table *)malloc(sizeof(Table));
+    int fd = open(filename,
+                  O_RDWR |     // Read/Write mode
+                      O_CREAT, // Create file if it does not exist
+                  S_IWUSR |    // User write permission
+                      S_IRUSR  // User read permission
+    );
 
-    table->num_rows = 0;
+    if (fd == -1)
+    {
+        printf("Unable to open file\n");
+        exit(EXIT_FAILURE);
+    }
 
-    // initial page pointer array
+    // 取得檔案的大小 ( bytes )
+    off_t file_length = lseek(fd, 0, SEEK_END);
+
+    // 跟 (Pager*)malloc(sizeof(Pager)) 一樣
+    Pager *pager = malloc(sizeof(Pager));
+
+    pager->file_descriptor = fd;
+    pager->file_lenght = file_length;
+
+    // 初始化 page cache
     for (uint32_t i = 0; i < TABLE_MAX_PAGE; i++)
     {
 
-        table->pages[i] = NULL;
+        pager->pages[i] = NULL;
     }
+
+    return pager;
+}
+
+void pager_flush(Pager *pager, uint32_t page_num, uint32_t size)
+{
+
+    if (pager->pages[page_num] == NULL)
+    {
+        printf("Tried to flush null page.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    off_t offset = lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+
+    if (offset == -1)
+    {
+        printf("Error seeking: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+
+    ssize_t bytes_written = write(pager->file_descriptor, pager->pages[page_num], size);
+
+    if (bytes_written == -1)
+    {
+        printf("Error writting: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+}
+
+Table *db_open(const char *filename)
+{
+
+    Pager *pager = pager_open(filename);
+    uint32_t num_rows = pager->file_lenght / ROW_SIZE;
+
+    Table *table = (Table *)malloc(sizeof(Table));
+
+    table->pager = pager;
+    table->num_rows = num_rows;
 
     return table;
 }
 
-void free_table(Table *table)
+void db_close(Table *table)
 {
 
-    // if page[i] == NULL; break
-    for (uint32_t i = 0; table->pages[i]; i++)
+    Pager *pager = table->pager;
+
+    uint32_t num_full_pages = table->num_rows / ROWS_PRE_PAGE;
+
+    for (uint32_t i = 0; i < num_full_pages; i++)
     {
 
-        free(table->pages[i]);
+        if (pager->pages[i] == NULL)
+        {
+
+            continue;
+        }
+
+        pager_flush(pager, i, PAGE_SIZE);
+        free(pager->pages[i]);
+        pager->pages[i] = NULL;
     }
 
+    // 可能會有沒有存滿一個 page 的資料
+    // 切換到 B-Tree 就不需要處理這個
+    uint32_t num_additional_row = table->num_rows % ROWS_PRE_PAGE;
+    if (num_additional_row > 0)
+    {
+        uint32_t page_num = num_full_pages;
+
+        if (pager->pages[page_num] != NULL)
+        {
+
+            pager_flush(pager, page_num, num_additional_row * ROW_SIZE);
+            free(pager->pages[page_num]);
+            pager->pages[page_num] = NULL;
+        }
+    }
+
+    int result = close(pager->file_descriptor);
+    if (result == -1)
+    {
+        printf("Error closing db file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (uint32_t i = 0; i < TABLE_MAX_PAGE; i++)
+    {
+
+        void *page = pager->pages[i];
+
+        if (page)
+        {
+            free(page);
+            pager->pages[i] = NULL;
+        }
+    }
+
+    free(pager);
     free(table);
 }
 
 int main(int argc, char *argv[])
 {
-    Table *table = new_table();
+
+    if (argc < 2)
+    {
+        printf("Must supply a database filename.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    char *filename = argv[1];
+    Table *table = db_open(filename);
+
     InputBuffer *input_buffer = new_input_buffer();
 
     while (true)
@@ -374,7 +540,7 @@ int main(int argc, char *argv[])
         if (input_buffer->buffer[0] == '.')
         {
 
-            switch (do_meta_command(input_buffer))
+            switch (do_meta_command(input_buffer, table))
             {
 
             case (META_COMMAND_SUCCESS):
