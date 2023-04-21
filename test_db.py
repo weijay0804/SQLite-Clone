@@ -1,10 +1,18 @@
 import subprocess
 import unittest
+import os
 
 class TestDatabase(unittest.TestCase):
+
+    def setUp(self) -> None:
+        open("./test.db", "x").close()
+
+    def tearDown(self) -> None:
+        os.remove("./test.db")
+
     def run_script(self, commands):
         # 執行 C 程序
-        process = subprocess.Popen("./db.out", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(["./db.out", "test.db"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # 寫入輸入
         for command in commands:
@@ -125,6 +133,37 @@ class TestDatabase(unittest.TestCase):
         ]
 
         self.assertEqual(output, "\n".join(output_list))
+
+    def test_data_persistence(self):
+
+        script1 = [
+            "insert 1 test test@test.com",
+            ".exit"
+        ]
+
+        output1, error1 = self.run_script(script1)
+
+        output1_list = [
+            "db > Executed.",
+            "db > Bye~"
+        ]
+
+        script2 = [
+            "select",
+            ".exit"
+        ]
+
+        self.assertEqual(output1, "\n".join(output1_list))
+
+        output2, error2 = self.run_script(script2)
+
+        output2_list = [
+            "db > (1, test, test@test.com)",
+            "Executed.",
+            "db > Bye~"
+        ]
+
+        self.assertEqual(output2, "\n".join(output2_list))
 
 if __name__ == "__main__":
     unittest.main()
